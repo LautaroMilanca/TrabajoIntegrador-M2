@@ -1,0 +1,13 @@
+name: airbnb_dbt
+version: 1.0
+profile: airbnb_dbt
+
+models:
+  airbnb_dbt:
+    +materialized: table
+    staging:
+      +schema: staging
+    core:
+      +schema: core
+    marts:
+      +schema: marts

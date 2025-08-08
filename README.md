@@ -151,7 +151,7 @@ Estas variables son suficientes para construir un modelo analítico confiable qu
 
 
 
-# Segundo avance: DISEÑO DE LA ARQUITECTURA
+# Segundo avance: Extracción de datos
 
 ##  Desarrollo del script de extracción de datos
 Este script forma parte del módulo de extracción del pipeline y se encuentra ubicado en `scripts/ingestion/extract_airbnb_data.py`. 
@@ -355,3 +355,150 @@ docker push usuario_dockerhub/airbnb-extractor:1.0
 docker run --rm \
   -v $(pwd)/data:/app/data \
   usuario_dockerhub/airbnb-extractor:1.0
+
+
+
+# Tercer avance: Transformación de datos
+
+## Configuración de `models/sources.yml`
+
+Este archivo declara las **fuentes** que dbt usará para leer los datos desde la capa RAW del Data Warehouse.  
+Permite definir:
+
+- **database** y **schema** reales donde se encuentran las tablas.
+- **identifier** (si el nombre físico de la tabla no coincide con el lógico).
+- Tests de calidad (`not_null`, `unique`, reglas personalizadas).
+- Opcionalmente, verificación de frescura (`freshness`).
+
+
+## Ejecución de Transformaciones
+
+Para correr los modelos y tests:
+
+```bash
+# Verificar conexión
+dbt debug
+
+# Listar fuentes detectadas
+dbt source list
+
+# Chequear frescura de datos
+dbt source freshness
+
+# Ejecutar transformaciones iniciales
+dbt run --select staging
+
+# Ejecutar todas las transformaciones
+dbt run
+
+# Correr tests de calidad
+dbt test
+```
+
+---
+
+## Buenas prácticas
+
+1. **Nombrado consistente** entre tabla física y nombre lógico en dbt.
+2. **Tests de calidad** para columnas críticas (IDs, claves primarias, precios).
+3. **Freshness** activado solo si existe una columna de fecha de carga (`ingested_at`).
+4. **Mayúsculas/minúsculas**: en Snowflake usar `quoting` para evitar problemas.
+5. Mantener la separación entre:
+   - **Bronze (RAW)**: datos crudos.
+   - **Silver (STG)**: datos limpios y normalizados.
+   - **Gold (MARTS)**: datos agregados para consumo analítico.
+
+---
+
+## Resumen de cumplimiento de consignas
+
+- **Scripts en SQL** implementados en dbt para responder preguntas de negocio.
+- **Integración de datos no estructurados** (JSON) con datos estructurados en modelos unificados.
+- **Validación de transformaciones** mediante tests automáticos de dbt y verificación de frescura.
+- **Almacenamiento en capas**:  
+  - Bronze (RAW) → Silver (Staging) → Gold (Marts)  
+  - Datos listos para análisis en la capa Gold.
+
+# Cuarto avance: Orquestación de Pipelines y CI/CD
+
+## Configuración de Apache Airflow con Docker
+
+Se implementa Apache Airflow utilizando **Docker Compose** y un **Dockerfile** personalizado, permitiendo ejecutar y orquestar pipelines de datos de forma local.
+
+
+### Estructura de `docker`
+```
+docker/
+ ├── Dockerfile
+ ├── docker-compose.yml
+ └── requirements.txt
+```
+
+### Pasos realizados
+
+1. **Definición del entorno Airflow**  
+   - Se creó un `docker-compose.yml` que levanta los servicios necesarios:
+     - `airflow-webserver`
+     - `airflow-scheduler`
+     - `postgres` (metadatos de Airflow)
+2. **Construcción de imagen personalizada**  
+   - El `Dockerfile` parte de una imagen base ligera (`python:3.10-slim`).
+   - Instala dependencias desde `requirements-airflow.txt`.
+   - Configura variables y directorios para la ejecución de Airflow.
+
+3. **Inicialización y ejecución local**  
+   ```bash
+   docker compose up airflow-init
+   docker compose up -d
+   ```
+   Esto permite levantar la interfaz web de Airflow en `http://localhost:8080`.
+
+4. **Construcción y publicación de imagen**  
+   - La imagen se construyó con:
+     ```bash
+     docker build -t <usuario>/airflow-pipeline:1.0.0 .
+     ```
+
+## Definición de DAGs
+
+En esta etapa se definió un **DAG (Directed Acyclic Graph)** en Apache Airflow para orquestar de forma estructurada todo el proceso de **ingesta, transformación y carga** de datos.
+
+### Estructura de tareas
+El DAG incluye tres tareas principales:
+
+1. **Extracción (`extract_task`)**
+   - Llama a los scripts de extracción desarrollados en los avances anteriores.
+   - Se ejecutan en contenedor y almacenan los datos en la capa **Raw**.
+
+2. **Transformación (`transform_task`)**
+   - Ejecuta el comando `dbt run` apuntando al directorio del proyecto DBT montado en el contenedor.
+   - Este paso aplica todas las transformaciones necesarias sobre los datos crudos, integrando datos estructurados y no estructurados para responder las preguntas de negocio.
+
+3. **Carga (`load_task`)**
+   - Ejecuta un script Python (`scripts/load_data.py`) que lee los datos transformados y los carga en la capa **Gold** del Data Warehouse.
+
+## Implementación de una gestión robusta de dependencias entre tareas
+
+### 1. Gestión de dependencias entre tareas
+- Se definieron las relaciones entre tareas usando el operador `>>` de Airflow para garantizar que cada paso del proceso de **ingesta → transformación → carga** se ejecute en orden correcto.
+
+```python
+extract_task >> transform_task >> load_task
+```
+
+### 2. Asegurar la idempotencia
+- Las tareas están diseñadas para ser **re-ejecutables sin provocar duplicación de datos** ni inconsistencias.
+- Estrategias aplicadas:
+  - Limpieza de archivos temporales antes de la extracción.
+  - Uso de tablas temporales en el Data Warehouse antes de hacer `INSERT` o `MERGE` finales.
+  - Validaciones previas para evitar cargas repetidas.
+
+### 3. Manejo robusto de errores
+- Configuración de `retries` y `retry_delay` en cada operador para permitir reintentos automáticos en caso de fallos temporales.
+
+- Uso de `on_failure_callback` para loggear y notificar errores críticos.
+
+### 4. Beneficios logrados
+- Flujo confiable y recuperable ante fallos.
+- Evita que tareas intermedias se ejecuten si las anteriores fallan.
+- Permite reintentos automáticos, reduciendo intervención manual.

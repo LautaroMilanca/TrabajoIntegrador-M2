@@ -1,0 +1,15 @@
+version: 2
+models:
+  - name: stg_listings
+    columns:
+      - name: listing_id
+        tests: [not_null, unique]
+      - name: price
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "price >= 0"
+      - name: availability_365
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "availability_365 between 0 and 365"

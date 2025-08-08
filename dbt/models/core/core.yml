@@ -1,0 +1,13 @@
+version: 2
+models:
+  - name: fact_listings
+    tests:
+      - relationships:
+          to: ref('dim_host')
+          field: host_key
+      - relationships:
+          to: ref('dim_neighbourhood')
+          field: neighbourhood_key
+      - relationships:
+          to: ref('dim_room_type')
+          field: room_type_key
